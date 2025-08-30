@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html;charset=utf-8">
+    <title>2D Sierpinski Gasket</title>
+    
+    <script id="vertex-shader" type="x-shader/x-vertex">
+    attribute vec4 vPosition;
+    
+    void
+    main()
+    {
+      gl_PointSize = 3.0;
+        gl_Position = vPosition;
+    }
+    </script>
+    
+    <script id="fragment-shader" type="x-shader/x-fragment">
+    precision mediump float;
+    
+    void
+    main()
+    {
+        gl_FragColor = vec4( 1.0, 0.0, 0.0, 1.0 );
+    }
+    </script>
+    
+    <script type="text/javascript" src="webgl-utils.js"></script>
+    <script type="text/javascript" src="initShaders.js"></script>
+    <script type="text/javascript" src="MV.js"></script>
+    <script type="text/javascript" src="gasket1.js"></script>
+    </head>
+    
+    <body>
+    <canvas id="gl-canvas" width="512" height="512">
+    Oops ... your browser doesn't support the HTML5 canvas element
+    </canvas>
+    
+    
+    </body>
+<body>
+<canvas id="gl"></canvas>
+
+<script>
+"use strict";
+
+// ------- minimal matrix utils (column-major) -------
+function mat4Identity(){ return [1,0,0,0,  0,1,0,0,  0,0,1,0,  0,0,0,1]; }
+function mat4Mul(a,b){ // c = a*b
+  const c = new Array(16);
+  for(let r=0;r<4;r++){
+    for(let c2=0;c2<4;c2++){
+      c[c2*4+r]=a[0*4+r]*b[c2*4+0]+a[1*4+r]*b[c2*4+1]+a[2*4+r]*b[c2*4+2]+a[3*4+r]*b[c2*4+3];
+    }
+  }
+  return c;
+}
+function mat4Perspective(fovy, aspect, near, far){
+  const f = 1/Math.tan(fovy/2), nf = 1/(near - far);
+  return [f/aspect,0,0,0,  0,f,0,0,  0,0,(far+near)*nf,-1,  0,0,(2*far*near)*nf,0];
+}
+function mat4Translate(m, x,y,z){
+  const t = mat4Identity(); t[12]=x; t[13]=y; t[14]=z; return mat4Mul(m,t);
+}
+function mat4RotateX(m, a){
+  const c=Math.cos(a), s=Math.sin(a);
+  const r=[1,0,0,0,  0,c,s,0,  0,-s,c,0,  0,0,0,1]; return mat4Mul(m,r);
+}
+function mat4RotateY(m, a){
+  const c=Math.cos(a), s=Math.sin(a);
+  const r=[c,0,-s,0,  0,1,0,0,  s,0,c,0,  0,0,0,1]; return mat4Mul(m,r);
+}
+
+// ------- torus geometry (triangles) -------
+function createTorus(Nu=64, Nv=32, R=1.0, r=0.35){
+  const positions = [];
+  const colors    = [];
+  const indices   = [];
+
+  // generate vertices
+  for(let i=0;i<Nu;i++){
+    const u = i/Nu * 2*Math.PI;
+    const cu = Math.cos(u), su = Math.sin(u);
+    for(let j=0;j<Nv;j++){
+      const v = j/Nv * 2*Math.PI;
+      const cv = Math.cos(v), sv = Math.sin(v);
+      const x = (R + r*cv) * cu;
+      const y = (R + r*cv) * su;
+      const z =  r * sv;
+      positions.push(x,y,z);
+
+      // simple color gradient based on parameters
+      const c1 = 0.5 + 0.5*cv;
+      const c2 = 0.5 + 0.5*sv;
+      const c3 = 0.5 + 0.5*cu;
+      colors.push(c1, c2, c3);
+    }
+  }
+
+  // generate triangle indices: 2 triangles per quad
+  const idx = (i,j)=> ( (i%Nu)*Nv + (j%Nv) );
+  for(let i=0;i<Nu;i++){
+    for(let j=0;j<Nv;j++){
+      const a = idx(i,   j);
+      const b = idx(i+1, j);
+      const c = idx(i,   j+1);
+      const d = idx(i+1, j+1);
+      // a-c-b and b-c-d (consistent winding)
+      indices.push(a, c, b,   b, c, d);
+    }
+  }
+
+  return {
+    positions: new Float32Array(positions),
+    colors:    new Float32Array(colors),
+    indices:   new Uint32Array(indices)
+  };
+}
+
+// ------- WebGL bootstrapping -------
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl');
+if(!gl){ alert('WebGL not available'); throw new Error('No WebGL'); }
+
+const ext = gl.getExtension('OES_element_index_uint');
+if(!ext){ console.warn('OES_element_index_uint missing; reduce mesh size if it fails.'); }
+
+// compile/link
+function compile(id, type){
+  const src = document.getElementById(id).textContent;
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if(!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(sh));
+    throw new Error('Shader compile error');
+  }
+  return sh;
+}
+const vs = compile('vs', gl.VERTEX_SHADER);
+const fs = compile('fs', gl.FRAGMENT_SHADER);
+const prog = gl.createProgram();
+gl.attachShader(prog, vs);
+gl.attachShader(prog, fs);
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+  console.error(gl.getProgramInfoLog(prog));
+  throw new Error('Program link error');
+}
+gl.useProgram(prog);
+
+// geometry
+const Nu = 64, Nv = 32;
+const R  = 1.0, r = 0.35;
+const mesh = createTorus(Nu, Nv, R, r);
+
+// buffers
+function makeVBO(data, attrib, size){
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, attrib);
+  gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(loc);
+}
+makeVBO(mesh.positions, 'aPosition', 3);
+makeVBO(mesh.colors,    'aColor',    3);
+
+const ibo = gl.createBuffer();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
+
+// uniforms
+const uMVP = gl.getUniformLocation(prog, 'uMVP');
+
+// GL state
+gl.clearColor(0.07, 0.07, 0.09, 1);
+gl.enable(gl.DEPTH_TEST);
+
+// render a single, non-animated frame
+function renderStatic(){
+  // Update canvas size to match the window
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+
+  // build MVP = P * (Ry * Rx * T)
+  let M = mat4Identity();
+  M = mat4RotateX(M, -0.8);
+  M = mat4RotateY(M, 0.8);
+
+  // Center the object based on its dimensions and the view.
+  // We can push the object back a fixed amount that works well for its size.
+  // A value of around -4.0 works well for the default torus size.
+  M = mat4Translate(M, 0, 0, -4.0);
+
+  const aspect = canvas.width / canvas.height;
+  const P = mat4Perspective(45*Math.PI/180, aspect, 0.1, 100.0);
+  const MVP = mat4Mul(P, M);
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.uniformMatrix4fv(uMVP, false, new Float32Array(MVP));
+  gl.drawElements(gl.TRIANGLES, mesh.indices.length, gl.UNSIGNED_INT, 0);
+}
+
+// Initial render
+renderStatic();
+
+// Resize handling
+window.addEventListener('resize', renderStatic);
+
+</script>
+</body>
+</html>
